@@ -1,6 +1,22 @@
 <xml xmlns="https://developers.google.com/blockly/xml" id="toolbox" style="display: none">
   <category name="CB MÀU" colour="#ae00ae" icon="palette">
+
+    <label text="── Kiểm tra kết nối ──" />
+    <block type="tcs34725_is_ready" />
+
+    <label text="── Hiệu chuẩn (làm 1 lần) ──" />
+    <block type="tcs34725_calibrate_white" />
+    <block type="tcs34725_calibrate_black" />
+
+    <label text="── Nhận diện màu ──" />
+    <block type="tcs34725_get_color_name" />
     <block type="uno_tcs34725_read" />
     <block type="uno_tcs34725_detect" />
+
+    <label text="── Dò line (robot) ──" />
+    <block type="tcs34725_on_dark" />
+    <block type="tcs34725_on_light" />
+    <block type="tcs34725_line_position" />
+
   </category>
 </xml>
