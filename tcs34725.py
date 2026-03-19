@@ -71,6 +71,11 @@ class TCS34725:
         # Calibration storage
         self._cal_black = None   # (r, g, b) raw at black surface
         self._cal_white = None   # (r, g, b) raw at white surface
+        # White balance: per-channel multipliers so white → equal R=G=B
+        # Computed from _cal_white during calibrate_white()
+        self._wb_r = 1.0
+        self._wb_g = 1.0
+        self._wb_b = 1.0
 
     # ------------------------------------------------------------------ #
     #  LOW-LEVEL REGISTER ACCESS (unchanged)
@@ -304,19 +309,42 @@ class TCS34725:
             h = (60 * ((r - g) / diff) + 240) % 360
         return h, s, v
 
+    def _apply_white_balance(self, r, g, b):
+        """
+        Apply per-channel white balance multipliers computed during
+        calibrate_white(). Corrects the sensor's native channel bias
+        (e.g. Blue systematically reading higher than Green).
+        Returns corrected (r, g, b) as floats — caller rounds as needed.
+        """
+        return r * self._wb_r, g * self._wb_g, b * self._wb_b
+
     def _normalize_rgb_calibrated(self, r, g, b):
         """
-        Normalize RGB using stored black/white calibration points.
+        Full pipeline:
+          1. Apply white balance (fix inter-channel bias)
+          2. Stretch each channel against calibrated black/white range
+
         Returns normalized (r, g, b) in 0-255 range.
         """
+        # Step 1 — white balance
+        r, g, b = self._apply_white_balance(r, g, b)
+
+        # Step 2 — black/white stretch
         if self._cal_black is None or self._cal_white is None:
-            return r, g, b
-        nr, ng, nb = self._cal_black
-        wr, wg, wb = self._cal_white
+            # No calibration: clamp to 0-255
+            return (max(0, min(255, int(r))),
+                    max(0, min(255, int(g))),
+                    max(0, min(255, int(b))))
+
+        # White balance the calibration points too so the stretch is consistent
+        nr, ng, nb = self._apply_white_balance(*self._cal_black)
+        wr, wg, wb = self._apply_white_balance(*self._cal_white)
+
         def norm(val, lo, hi):
             if hi == lo:
                 return 128
             return max(0, min(255, int((val - lo) * 255 / (hi - lo))))
+
         return norm(r, nr, wr), norm(g, ng, wg), norm(b, nb, wb)
 
     # ================================================================== #
@@ -336,9 +364,15 @@ class TCS34725:
 
     def calibrate_white(self):
         """
-        Record the current surface as WHITE reference.
+        Record the current surface as WHITE reference AND compute white balance.
         Point the sensor at a plain white surface before calling this.
         Uses averaged reading for stability.
+
+        White balance: computes per-channel multipliers (wb_r, wb_g, wb_b)
+        so that a white surface reads equal R = G = B after correction.
+        This compensates for the sensor's native channel bias (e.g. Blue
+        reading higher than Green under warm light) that causes green objects
+        to be misclassified as blue over time.
         """
         data = self._read_average_raw(samples=8)
         if data is None:
@@ -348,7 +382,18 @@ class TCS34725:
         brightness = self._brightness_percent(c)
         self._check_brightness_warning(brightness)
         self._cal_white = (r, g, b)
+
+        # Compute white balance multipliers.
+        # Target: bring all channels to the average of the three,
+        # so white stays white and intermediate colors are unbiased.
+        avg = (r + g + b) / 3.0
+        self._wb_r = avg / r if r > 0 else 1.0
+        self._wb_g = avg / g if g > 0 else 1.0
+        self._wb_b = avg / b if b > 0 else 1.0
+
         print('[TCS34725] White calibrated: R={} G={} B={} (brightness={}%)'.format(r, g, b, brightness))
+        print('[TCS34725] White balance:    wb_r={:.3f} wb_g={:.3f} wb_b={:.3f}'.format(
+            self._wb_r, self._wb_g, self._wb_b))
         return True
 
     def calibrate_black(self):
@@ -398,23 +443,26 @@ class TCS34725:
         h, s, v = self._rgb_to_hsv(r_s, g_s, b_s)
 
         # Achromatic: black or white
-        if v < 20:
+        # Use original (non-scaled) brightness via v before scale trick
+        if v < 15:
             return 'đen'
-        if s < 20:
-            if v > 70:
+        if s < 25:
+            if v > 60:
                 return 'trắng'
             return 'đen'
 
         # Chromatic: classify by Hue
+        # Green boundary extended to 165° to capture real-world green
+        # pigments that shift toward cyan on this sensor.
         if h < 15 or h >= 345:
             return 'đỏ'
         elif h < 36:
             return 'cam'
         elif h < 66:
             return 'vàng'
-        elif h < 150:
+        elif h < 165:           # extended from 150 → 165
             return 'xanh lá'
-        #elif h < 186:
+        #elif h < 195:           # narrow cyan band
             #return 'xanh lam'
         elif h < 261:
             return 'xanh dương'
